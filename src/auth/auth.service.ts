@@ -25,13 +25,9 @@ export class AuthService {
   async login(username: string, password: string) {
     try {
       const moodleBaseUrl = this.configService.get('MOODLE_URL');
-      console.log('URL base de Moodle:', moodleBaseUrl);
-
-      // 1. Intentar obtener token de Moodle
-      const loginUrl = `${moodleBaseUrl}/login/token.php`;
-      console.log('Intentando login en:', loginUrl, 'con usuario:', username);
-
-      const loginResponse = await axios.get(loginUrl, {
+      
+      // 1. Obtener token de Moodle
+      const loginResponse = await axios.get(`${moodleBaseUrl}/login/token.php`, {
         params: {
           username,
           password,
@@ -39,40 +35,35 @@ export class AuthService {
         }
       });
 
-      console.log('Respuesta completa de Moodle:', loginResponse.data);
-
       if (loginResponse.data.error) {
-        console.error('Error de Moodle:', loginResponse.data.error);
         throw new UnauthorizedException(loginResponse.data.error);
       }
 
       const moodleToken = loginResponse.data.token;
-      console.log('Token obtenido:', moodleToken);
 
       // 2. Obtener información del usuario
-      try {
-        const userInfo = await this.moodleService.getUserInfo(moodleToken);
-        console.log('Info del usuario:', userInfo);
+      const userInfo = await this.moodleService.getUserInfo(moodleToken);
+      
+      // Usar userissiteadmin para determinar el rol
+      const role = userInfo.userissiteadmin ? 'admin' : 'student';
 
-        // 3. Crear JWT
-        const payload = {
+      const payload = {
+        username,
+        moodleToken,
+        userId: userInfo.userid,
+        role
+      };
+
+      return {
+        access_token: this.jwtService.sign(payload),
+        user: {
+          id: userInfo.userid,
           username,
-          moodleToken,
-          userId: userInfo.userid,
-        };
+          fullname: userInfo.fullname,
+          role
+        }
+      };
 
-        return {
-          access_token: this.jwtService.sign(payload),
-          user: {
-            id: userInfo.userid,
-            username,
-            fullname: userInfo.fullname,
-          }
-        };
-      } catch (userError) {
-        console.error('Error al obtener info del usuario:', userError);
-        throw userError;
-      }
     } catch (error) {
       console.error('Error completo:', error.response?.data || error);
       if (error.response?.data?.error) {
@@ -92,46 +83,122 @@ export class AuthService {
     }
   }
 
-  async register(userData: RegisterDto) {
+  async register(registerDto: RegisterDto) {
     try {
-      const moodleToken = await this.getMoodleAdminToken();
-      
-      // Crear usuario en Moodle
-      const response = await axios.get(
-        `${this.configService.get('MOODLE_URL')}/webservice/rest/server.php`,
+      console.log('Iniciando registro de usuario:', {
+        username: registerDto.username,
+        email: registerDto.email
+      });
+
+      // Crear usuario
+      const moodleResponse = await this.moodleService.callMoodleApi(
+        'core_user_create_users',
+        await this.getMoodleAdminToken(),
         {
-          params: {
-            wstoken: moodleToken,
-            wsfunction: 'core_user_create_users',
-            moodlewsrestformat: 'json',
-            'users[0][username]': userData.username,
-            'users[0][password]': userData.password,
-            'users[0][firstname]': userData.firstname,
-            'users[0][lastname]': userData.lastname,
-            'users[0][email]': userData.email,
-            'users[0][auth]': 'manual'
-          }
+          users: [{
+            username: registerDto.username,
+            password: registerDto.password,
+            firstname: registerDto.firstname,
+            lastname: registerDto.lastname,
+            email: registerDto.email,
+            auth: 'manual'
+          }]
         }
       );
 
-      console.log('Respuesta de creación de usuario:', response.data);
+      // Asignar rol de estudiante por defecto
+      const userId = moodleResponse[0].id; // Moodle devuelve el ID del usuario creado
+      await this.moodleService.callMoodleApi(
+        'core_role_assign_roles',
+        await this.getMoodleAdminToken(),
+        {
+          assignments: [{
+            roleid: 5, // 5 es el ID por defecto del rol estudiante en Moodle
+            userid: userId,
+            contextid: 1 // Contexto del sistema
+          }]
+        }
+      );
 
-      if (response.data.exception) {
-        throw new Error(response.data.message);
+      // Generar token JWT incluyendo el rol
+      const payload = { 
+        username: registerDto.username,
+        role: 'student',
+        userId: userId
+      };
+
+      return {
+        access_token: await this.jwtService.signAsync(payload),
+        user: {
+          username: registerDto.username,
+          email: registerDto.email,
+          firstname: registerDto.firstname,
+          lastname: registerDto.lastname,
+          role: payload.role
+        }
+      };
+    } catch (error) {
+      console.error('Error detallado en registro:', {
+        error: error.response?.data || error,
+        message: error.message,
+        stack: error.stack
+      });
+
+      // Si es un error de BadRequest, lo propagamos
+      if (error instanceof BadRequestException) {
+        throw error;
       }
 
-      // Hacer login automáticamente después del registro
-      return this.login(userData.username, userData.password);
-    } catch (error) {
-      console.error('Error en registro:', error.response?.data || error);
-      throw new BadRequestException(
-        error.response?.data?.message || error.message || 'Error al crear usuario'
-      );
+      // Para otros tipos de errores
+      throw new BadRequestException({
+        message: 'Error al registrar usuario en Moodle',
+        details: error.response?.data?.message || error.message
+      });
     }
   }
 
   private async getMoodleAdminToken(): Promise<string> {
     // Usamos el token que ya tenemos configurado para el admin
     return this.configService.get('MOODLE_TOKEN') || '';
+  }
+
+  async changeRole(userId: string, newRole: string) {
+    try {
+      // Validar que el rol sea válido
+      if (!['student', 'teacher', 'admin'].includes(newRole)) {
+        throw new BadRequestException('Rol no válido');
+      }
+
+      // Actualizar rol en Moodle
+      await this.moodleService.callMoodleApi(
+        'core_role_assign_roles',
+        await this.getMoodleAdminToken(),
+        {
+          assignments: [{
+            roleid: this.getRoleId(newRole),
+            userid: userId,
+            contextid: 1
+          }]
+        }
+      );
+
+      return {
+        success: true,
+        message: `Rol actualizado a ${newRole}`,
+        role: newRole
+      };
+    } catch (error) {
+      throw new BadRequestException('Error al cambiar el rol del usuario');
+    }
+  }
+
+  private getRoleId(role: string): number {
+    // Mapeo simple de roles a IDs de Moodle
+    const roleMap = {
+      'student': 5,
+      'teacher': 3,
+      'admin': 1
+    };
+    return roleMap[role] || 5; // 5 (estudiante) por defecto
   }
 }

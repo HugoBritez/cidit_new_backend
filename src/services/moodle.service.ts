@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 
@@ -11,23 +11,101 @@ export class MoodleService {
   }
 
   async callMoodleApi(wsfunction: string, token: string, params = {}) {
-    const response = await axios.get(
-      `${this.baseUrl}/webservice/rest/server.php`,
-      {
-        params: {
-          wstoken: token,
-          wsfunction,
-          moodlewsrestformat: 'json',
-          ...params,
-        },
-      },
-    );
+    try {
+      const formattedParams = this.flattenObject(params);
+      
+      console.log('Llamando a Moodle API:', {
+        función: wsfunction,
+        parámetros: formattedParams
+      });
 
-    if (response.data.exception) {
-      throw new Error(response.data.message);
+      const response = await axios.get(
+        `${this.baseUrl}/webservice/rest/server.php`,
+        {
+          params: {
+            wstoken: token,
+            wsfunction,
+            moodlewsrestformat: 'json',
+            ...formattedParams
+          }
+        }
+      );
+
+      // Log detallado de la respuesta
+      console.log('Respuesta completa de Moodle:', {
+        status: response.status,
+        data: response.data,
+        headers: response.headers
+      });
+
+      // Moodle puede devolver errores con status 200
+      if (response.data.exception || response.data.errorcode) {
+        console.error('Error de Moodle con status 200:', response.data);
+        throw new BadRequestException({
+          message: response.data.message || response.data.error,
+          errorcode: response.data.errorcode,
+          exception: response.data.exception
+        });
+      }
+
+      return response.data;
+    } catch (error) {
+      // Mejorar el logging del error
+      if (error.response?.data) {
+        console.error('Error detallado de Moodle:', {
+          status: error.response.status,
+          data: error.response.data,
+          headers: error.response.headers
+        });
+      } else {
+        console.error('Error no relacionado con la respuesta:', error);
+      }
+
+      // Si es un error que ya hemos formateado, lo pasamos directamente
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+
+      throw new BadRequestException(
+        error.response?.data?.message || 
+        error.response?.data?.error ||
+        'Error en la comunicación con Moodle'
+      );
+    }
+  }
+
+  private flattenObject(obj: any, prefix = ''): any {
+    const flattened = {};
+
+    for (const key in obj) {
+      if (obj.hasOwnProperty(key)) {
+        const value = obj[key];
+        const newKey = prefix ? `${prefix}[${key}]` : key;
+
+        if (value === null) {
+          flattened[newKey] = '';
+        } else if (typeof value === 'object') {
+          if (Array.isArray(value)) {
+            // Manejar arrays
+            value.forEach((item, index) => {
+              const arrayPrefix = `${newKey}[${index}]`;
+              if (typeof item === 'object') {
+                Object.assign(flattened, this.flattenObject(item, arrayPrefix));
+              } else {
+                flattened[arrayPrefix] = item;
+              }
+            });
+          } else {
+            // Manejar objetos anidados
+            Object.assign(flattened, this.flattenObject(value, newKey));
+          }
+        } else {
+          flattened[newKey] = value;
+        }
+      }
     }
 
-    return response.data;
+    return flattened;
   }
 
   async getUserInfo(token: string) {
