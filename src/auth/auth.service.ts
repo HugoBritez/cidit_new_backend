@@ -2,6 +2,7 @@ import { Injectable, UnauthorizedException, BadRequestException } from '@nestjs/
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { MoodleService } from '../services/moodle.service';
+import { UsersService } from '../users/users.service';
 import axios from 'axios';
 import { RegisterDto } from './dto/registrer.dto';
 
@@ -11,6 +12,7 @@ export class AuthService {
     private jwtService: JwtService,
     private configService: ConfigService,
     private moodleService: MoodleService,
+    private usersService: UsersService,
   ) {}
 
   async validateMoodleToken(token: string): Promise<boolean> {
@@ -44,8 +46,23 @@ export class AuthService {
       // 2. Obtener información del usuario
       const userInfo = await this.moodleService.getUserInfo(moodleToken);
       
-      // Usar userissiteadmin para determinar el rol
+      // Determinar el rol basado en userissiteadmin
       const role = userInfo.userissiteadmin ? 'admin' : 'student';
+
+      // 3. Crear o actualizar usuario local
+      await this.usersService.createLocalUser({
+        id: userInfo.userid,
+        username: username,
+        firstname: userInfo.firstname,
+        lastname: userInfo.lastname,
+        email: userInfo.email,
+        auth: 'manual',
+        suspended: 0,
+        confirmed: 1
+      }, role);
+
+      // 4. Actualizar último login
+      await this.usersService.updateLastLogin(userInfo.userid.toString());
 
       const payload = {
         username,
@@ -90,7 +107,7 @@ export class AuthService {
         email: registerDto.email
       });
 
-      // Crear usuario
+      // 1. Crear usuario en Moodle
       const moodleResponse = await this.moodleService.callMoodleApi(
         'core_user_create_users',
         await this.getMoodleAdminToken(),
@@ -106,22 +123,34 @@ export class AuthService {
         }
       );
 
-      // Asignar rol de estudiante por defecto
-      const userId = moodleResponse[0].id; // Moodle devuelve el ID del usuario creado
+      const userId = moodleResponse[0].id;
+
+      // 2. Asignar rol de estudiante por defecto en Moodle
       await this.moodleService.callMoodleApi(
         'core_role_assign_roles',
         await this.getMoodleAdminToken(),
         {
           assignments: [{
-            roleid: 5, // 5 es el ID por defecto del rol estudiante en Moodle
+            roleid: 5,
             userid: userId,
-            contextid: 1 // Contexto del sistema
+            contextid: 1
           }]
         }
       );
 
-      // Generar token JWT incluyendo el rol
-      const payload = { 
+      // 3. Crear usuario local
+      await this.usersService.createLocalUser({
+        id: userId,
+        username: registerDto.username,
+        firstname: registerDto.firstname,
+        lastname: registerDto.lastname,
+        email: registerDto.email,
+        auth: 'manual',
+        suspended: 0,
+        confirmed: 1
+      }, 'student');
+
+      const payload = {
         username: registerDto.username,
         role: 'student',
         userId: userId
@@ -134,71 +163,16 @@ export class AuthService {
           email: registerDto.email,
           firstname: registerDto.firstname,
           lastname: registerDto.lastname,
-          role: payload.role
+          role: 'student'
         }
       };
     } catch (error) {
-      console.error('Error detallado en registro:', {
-        error: error.response?.data || error,
-        message: error.message,
-        stack: error.stack
-      });
-
-      // Si es un error de BadRequest, lo propagamos
-      if (error instanceof BadRequestException) {
-        throw error;
-      }
-
-      // Para otros tipos de errores
-      throw new BadRequestException({
-        message: 'Error al registrar usuario en Moodle',
-        details: error.response?.data?.message || error.message
-      });
+      console.error('Error en registro:', error);
+      throw new BadRequestException('Error al registrar usuario');
     }
   }
 
   private async getMoodleAdminToken(): Promise<string> {
-    // Usamos el token que ya tenemos configurado para el admin
     return this.configService.get('MOODLE_TOKEN') || '';
-  }
-
-  async changeRole(userId: string, newRole: string) {
-    try {
-      // Validar que el rol sea válido
-      if (!['student', 'teacher', 'admin'].includes(newRole)) {
-        throw new BadRequestException('Rol no válido');
-      }
-
-      // Actualizar rol en Moodle
-      await this.moodleService.callMoodleApi(
-        'core_role_assign_roles',
-        await this.getMoodleAdminToken(),
-        {
-          assignments: [{
-            roleid: this.getRoleId(newRole),
-            userid: userId,
-            contextid: 1
-          }]
-        }
-      );
-
-      return {
-        success: true,
-        message: `Rol actualizado a ${newRole}`,
-        role: newRole
-      };
-    } catch (error) {
-      throw new BadRequestException('Error al cambiar el rol del usuario');
-    }
-  }
-
-  private getRoleId(role: string): number {
-    // Mapeo simple de roles a IDs de Moodle
-    const roleMap = {
-      'student': 5,
-      'teacher': 3,
-      'admin': 1
-    };
-    return roleMap[role] || 5; // 5 (estudiante) por defecto
   }
 }

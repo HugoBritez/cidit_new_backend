@@ -10,7 +10,7 @@ export class MoodleService {
     this.baseUrl = this.configService.get<string>('MOODLE_URL') || '';
   }
 
-  async callMoodleApi(wsfunction: string, token: string, params = {}) {
+  async callMoodleApi<T = any>(wsfunction: string, token: string, params = {}): Promise<T> {
     try {
       const formattedParams = this.flattenObject(params);
       
@@ -48,7 +48,7 @@ export class MoodleService {
         });
       }
 
-      return response.data;
+      return response.data as T;
     } catch (error) {
       // Mejorar el logging del error
       if (error.response?.data) {

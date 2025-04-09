@@ -1,4 +1,4 @@
-import { Controller, Post, Param, Get, Body } from '@nestjs/common';
+import { Controller, Post, Param, Get, Body, Query } from '@nestjs/common';
 import { UsersService } from './users.service';
 
 @Controller('users')
@@ -6,8 +6,11 @@ export class UsersController {
   constructor(private usersService: UsersService) {}
 
   @Get()
-  async getAllUsers() {
-    return this.usersService.getAllUsers();
+  async getAllUsers(
+    @Query('field') field?: string,
+    @Query('value') value?: string
+  ) {
+    return this.usersService.getAllUsers({ field, value });
   }
 
   @Post('change-role')

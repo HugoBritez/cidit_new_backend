@@ -1,0 +1,14 @@
+CREATE TABLE IF NOT EXISTS local_users (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  moodle_user_id INT NOT NULL UNIQUE,
+  username VARCHAR(255) NOT NULL UNIQUE,
+  email VARCHAR(255) NOT NULL UNIQUE,
+  first_name VARCHAR(255) NOT NULL,
+  last_name VARCHAR(255) NOT NULL,
+  role ENUM('student', 'teacher', 'admin') NOT NULL DEFAULT 'student',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  last_login TIMESTAMP NULL,
+  is_active BOOLEAN DEFAULT TRUE,
+  CONSTRAINT fk_moodle_user FOREIGN KEY (moodle_user_id) REFERENCES mdl_user(id) ON DELETE CASCADE
+); 

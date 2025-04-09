@@ -36,11 +36,4 @@ export class AuthController {
   async register(@Body() registerDto: RegisterDto) {
     return this.authService.register(registerDto);
   }
-
-  @Post('change-role')
-  async changeRole(
-    @Body() data: { userId: string, newRole: string }
-  ) {
-    return this.authService.changeRole(data.userId, data.newRole);
-  }
 }
